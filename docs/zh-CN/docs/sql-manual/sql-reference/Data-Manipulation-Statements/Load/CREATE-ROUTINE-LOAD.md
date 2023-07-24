@@ -47,7 +47,7 @@ CREATE ROUTINE LOAD [db.]job_name [ON tbl_name]
 FROM data_source [data_source_properties]
 [COMMENT "comment"]
 ```
-```
+
 
 - `[db.]job_name`
 
