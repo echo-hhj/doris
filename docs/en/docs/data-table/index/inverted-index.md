@@ -107,9 +107,7 @@ Inverted indexes have different limitations in different data models:
 
 :::
 
-- add an inverted index to existed table
-
-**Before version 2.0-beta:**
+- Adding an inverted index to an existing table (**only inverted indexes are generated for incremental data**):
 ```sql
 -- syntax 1
 CREATE INDEX idx_name ON table_name(column_name) USING INVERTED [PROPERTIES("parser" = "english|chinese|unicode")] [COMMENT 'your comment'];
@@ -117,16 +115,16 @@ CREATE INDEX idx_name ON table_name(column_name) USING INVERTED [PROPERTIES("par
 ALTER TABLE table_name ADD INDEX idx_name(column_name) USING INVERTED [PROPERTIES("parser" = "english|chinese|unicode")] [COMMENT 'your comment'];
 ```
 
-**After version 2.0-beta (including 2.0-beta):**
+- Add an inverted index to the stock data, **only after 2.0-beta version (including 2.0-beta)**:
 
-The above 'create/add index' operation only generates inverted index for incremental data. The syntax of build index is added to add inverted index to stock data:
+(**The above 'create/add index' operation needs to be executed before executing the build index**)
+
 ```sql
 -- syntax 1, add inverted index to the stock data of the whole table by default
 BUILD INDEX index_name ON table_name;
 -- syntax 2, partition can be specified, and one or more can be specified
 BUILD INDEX index_name ON table_name PARTITIONS(partition_name1, partition_name2);
 ```
-(**The above 'create/add index' operation needs to be executed before executing the build index**)
 
 To view the progress of the `build index`, you can use the following statement
 ```sql
