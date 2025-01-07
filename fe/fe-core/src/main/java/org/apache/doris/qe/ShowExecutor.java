@@ -861,8 +861,7 @@ public class ShowExecutor {
                 .getDbOrAnalysisException(showTableStmt.getDb());
         PatternMatcher matcher = null;
         if (showTableStmt.getPattern() != null) {
-            matcher = PatternMatcherWrapper.createMysqlPattern(showTableStmt.getPattern(),
-                    CaseSensibility.TABLE.getCaseSensibility());
+            matcher = PatternMatcherWrapper.createMysqlPattern(showTableStmt.getPattern(), isShowTablesCaseSensitive());
         }
         for (TableIf tbl : db.getTables()) {
             if (tbl.getName().startsWith(FeConstants.TEMP_MATERIZLIZE_DVIEW_PREFIX)) {
@@ -901,6 +900,13 @@ public class ShowExecutor {
         resultSet = new ShowResultSet(showTableStmt.getMetaData(), rows);
     }
 
+    public boolean isShowTablesCaseSensitive() {
+        if (GlobalVariable.lowerCaseTableNames == 0) {
+            return CaseSensibility.TABLE.getCaseSensibility();
+        }
+        return false;
+    }
+
     // Show table status statement.
     private void handleShowTableStatus() throws AnalysisException {
         ShowTableStatusStmt showStmt = (ShowTableStatusStmt) stmt;
@@ -911,8 +917,7 @@ public class ShowExecutor {
         if (db != null) {
             PatternMatcher matcher = null;
             if (showStmt.getPattern() != null) {
-                matcher = PatternMatcherWrapper.createMysqlPattern(showStmt.getPattern(),
-                        CaseSensibility.TABLE.getCaseSensibility());
+                matcher = PatternMatcherWrapper.createMysqlPattern(showStmt.getPattern(), isShowTablesCaseSensitive());
             }
             for (TableIf table : db.getTables()) {
                 if (matcher != null && !matcher.match(table.getName())) {
@@ -1153,17 +1158,20 @@ public class ShowExecutor {
                 .getCatalogOrAnalysisException(showStmt.getTableName().getCtl())
                 .getDbOrAnalysisException(showStmt.getDbName());
         if (db instanceof Database) {
-            OlapTable table = db.getOlapTableOrAnalysisException(showStmt.getTableName().getTbl());
-            table.readLock();
-            try {
-                List<Index> indexes = table.getIndexes();
-                for (Index index : indexes) {
-                    rows.add(Lists.newArrayList(showStmt.getTableName().toString(), "", index.getIndexName(),
-                            "", String.join(",", index.getColumns()), "", "", "", "",
-                            "", index.getIndexType().name(), index.getComment(), index.getPropertiesString()));
+            TableIf table = db.getTableOrAnalysisException(showStmt.getTableName().getTbl());
+            if (table instanceof OlapTable) {
+                OlapTable olapTable = (OlapTable) table;
+                olapTable.readLock();
+                try {
+                    List<Index> indexes = olapTable.getIndexes();
+                    for (Index index : indexes) {
+                        rows.add(Lists.newArrayList(showStmt.getTableName().toString(), "", index.getIndexName(),
+                                "", String.join(",", index.getColumns()), "", "", "", "",
+                                "", index.getIndexType().name(), index.getComment(), index.getPropertiesString()));
+                    }
+                } finally {
+                    olapTable.readUnlock();
                 }
-            } finally {
-                table.readUnlock();
             }
         }
         resultSet = new ShowResultSet(showStmt.getMetaData(), rows);
@@ -2799,6 +2807,7 @@ public class ShowExecutor {
                                 java.time.ZoneId.systemDefault());
                 row.add(startTime.format(formatter));
                 row.add(endTime.format(formatter));
+                row.add(analysisInfo.priority == null ? "N/A" : analysisInfo.priority.name());
                 resultRows.add(row);
             } catch (Exception e) {
                 LOG.warn("Failed to get analyze info for table {}.{}.{}, reason: {}",

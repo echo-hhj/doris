@@ -27,6 +27,7 @@ import org.apache.doris.common.Pair;
 import org.apache.doris.common.ThreadPoolManager;
 import org.apache.doris.common.security.authentication.AuthenticationConfig;
 import org.apache.doris.common.security.authentication.HadoopAuthenticator;
+import org.apache.doris.common.security.authentication.PreExecutionAuthenticator;
 import org.apache.doris.common.util.Util;
 import org.apache.doris.datasource.CatalogProperty;
 import org.apache.doris.datasource.ExternalCatalog;
@@ -34,6 +35,7 @@ import org.apache.doris.datasource.ExternalDatabase;
 import org.apache.doris.datasource.ExternalTable;
 import org.apache.doris.datasource.InitCatalogLog;
 import org.apache.doris.datasource.SessionContext;
+import org.apache.doris.datasource.iceberg.IcebergMetadataOps;
 import org.apache.doris.datasource.iceberg.IcebergUtils;
 import org.apache.doris.datasource.jdbc.client.JdbcClientConfig;
 import org.apache.doris.datasource.operations.ExternalMetadataOperations;
@@ -88,7 +90,7 @@ public class HMSExternalCatalog extends ExternalCatalog {
     private boolean enableHmsEventsIncrementalSync = false;
 
     //for "type" = "hms" , but is iceberg table.
-    private HiveCatalog icebergHiveCatalog;
+    private IcebergMetadataOps icebergMetadataOps;
 
     @VisibleForTesting
     public HMSExternalCatalog() {
@@ -99,12 +101,10 @@ public class HMSExternalCatalog extends ExternalCatalog {
      * Default constructor for HMSExternalCatalog.
      */
     public HMSExternalCatalog(long catalogId, String name, String resource, Map<String, String> props,
-            String comment) {
+                              String comment) {
         super(catalogId, name, InitCatalogLog.Type.HMS, comment);
         props = PropertyConverter.convertToMetaProperties(props);
         catalogProperty = new CatalogProperty(resource, props);
-        AuthenticationConfig config = AuthenticationConfig.getKerberosConfig(getConfiguration());
-        authenticator = HadoopAuthenticator.getHadoopAuthenticator(config);
     }
 
     @Override
@@ -168,9 +168,11 @@ public class HMSExternalCatalog extends ExternalCatalog {
 
     @Override
     protected void initLocalObjectsImpl() {
-        if (authenticator == null) {
+        this.preExecutionAuthenticator = new PreExecutionAuthenticator();
+        if (this.authenticator == null) {
             AuthenticationConfig config = AuthenticationConfig.getKerberosConfig(getConfiguration());
-            authenticator = HadoopAuthenticator.getHadoopAuthenticator(config);
+            this.authenticator = HadoopAuthenticator.getHadoopAuthenticator(config);
+            this.preExecutionAuthenticator.setHadoopAuthenticator(authenticator);
         }
 
         HiveConf hiveConf = null;
@@ -199,8 +201,6 @@ public class HMSExternalCatalog extends ExternalCatalog {
         transactionManager = TransactionManagerFactory.createHiveTransactionManager(hiveOps, fileSystemProvider,
                 fileSystemExecutor);
         metadataOps = hiveOps;
-
-        icebergHiveCatalog = IcebergUtils.createIcebergHiveCatalog(this, getName());
     }
 
     @Override
@@ -244,7 +244,7 @@ public class HMSExternalCatalog extends ExternalCatalog {
         }
         if (useMetaCache.get()) {
             if (isInitialized()) {
-                metaCache.invalidate(dbName, Util.genIdByName(getQualifiedName(dbName)));
+                metaCache.invalidate(dbName, Util.genIdByName(name, dbName));
             }
         } else {
             Long dbId = dbNameToId.remove(dbName);
@@ -262,10 +262,11 @@ public class HMSExternalCatalog extends ExternalCatalog {
             LOG.debug("create database [{}]", dbName);
         }
 
-        ExternalDatabase<? extends ExternalTable> db = buildDbForInit(dbName, dbId, logType, false);
+        ExternalDatabase<? extends ExternalTable> db = buildDbForInit(dbName, null, dbId, logType, false);
         if (useMetaCache.get()) {
             if (isInitialized()) {
-                metaCache.updateCache(dbName, db, Util.genIdByName(getQualifiedName(dbName)));
+                metaCache.updateCache(db.getRemoteName(), db.getFullName(), db,
+                        Util.genIdByName(name, db.getFullName()));
             }
         } else {
             dbNameToId.put(dbName, dbId);
@@ -337,10 +338,6 @@ public class HMSExternalCatalog extends ExternalCatalog {
         return enableHmsEventsIncrementalSync;
     }
 
-    public HiveCatalog getIcebergHiveCatalog() {
-        return icebergHiveCatalog;
-    }
-
     /**
      * Enum for meta tables in hive catalog.
      * eg: tbl$partitions
@@ -392,6 +389,15 @@ public class HMSExternalCatalog extends ExternalCatalog {
                     throw new AnalysisException("Unsupported meta function type: " + this);
             }
         }
+    }
+
+    public IcebergMetadataOps getIcebergMetadataOps() {
+        makeSureInitialized();
+        if (icebergMetadataOps == null) {
+            HiveCatalog icebergHiveCatalog = IcebergUtils.createIcebergHiveCatalog(this, getName());
+            icebergMetadataOps = ExternalMetadataOperations.newIcebergMetadataOps(this, icebergHiveCatalog);
+        }
+        return icebergMetadataOps;
     }
 }
 

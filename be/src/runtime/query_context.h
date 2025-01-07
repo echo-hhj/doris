@@ -300,9 +300,9 @@ public:
     // only for file scan node
     std::map<int, TFileScanRangeParams> file_scan_range_params_map;
 
-    void update_wg_cpu_adder(int64_t delta_cpu_time) {
+    void update_cpu_time(int64_t delta_cpu_time) {
         if (_workload_group != nullptr) {
-            _workload_group->update_cpu_adder(delta_cpu_time);
+            _workload_group->update_cpu_time(delta_cpu_time);
         }
     }
 
@@ -325,7 +325,13 @@ public:
         return _using_brpc_stubs;
     }
 
+    void push_instance_ids(const TUniqueId& ins_id) {
+        std::lock_guard<std::mutex> lock(_ins_lock);
+        fragment_instance_ids.push_back(ins_id);
+    }
+
 private:
+    std::mutex _ins_lock;
     TUniqueId _query_id;
     ExecEnv* _exec_env = nullptr;
     VecDateTimeValue _start_time;

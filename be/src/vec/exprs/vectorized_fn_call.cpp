@@ -99,7 +99,9 @@ Status VectorizedFnCall::prepare(RuntimeState* state, const RowDescriptor& desc,
         // get the function. won't prepare function.
         _function = SimpleFunctionFactory::instance().get_function(
                 _fn.name.function_name, argument_template, _data_type,
-                {.enable_decimal256 = state->enable_decimal256()}, state->be_exec_version());
+                {.enable_decimal256 = state->enable_decimal256(),
+                 .new_is_ip_address_in_range = state->new_is_ip_address_in_range()},
+                state->be_exec_version());
     }
     if (_function == nullptr) {
         return Status::InternalError("Could not find function {}, arg {} return {} ",
@@ -142,7 +144,7 @@ Status VectorizedFnCall::_do_execute(doris::vectorized::VExprContext* context,
     if (is_const_and_have_executed()) { // const have executed in open function
         return get_result_from_const(block, _expr_name, result_column_id);
     }
-    if (_can_fast_execute && fast_execute(context, block, result_column_id)) {
+    if (fast_execute(context, block, result_column_id)) {
         return Status::OK();
     }
     DBUG_EXECUTE_IF("VectorizedFnCall.must_in_slow_path", {

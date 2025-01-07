@@ -715,7 +715,7 @@ Status CsvReader::_fill_empty_line(Block* block, std::vector<MutableColumnPtr>& 
 }
 
 Status CsvReader::_validate_line(const Slice& line, bool* success) {
-    if (!_is_proto_format && !validate_utf8(line.data, line.size)) {
+    if (!_is_proto_format && !validate_utf8(_params, line.data, line.size)) {
         if (!_is_load) {
             return Status::InternalError<false>("Only support csv data in utf8 codec");
         } else {
@@ -925,9 +925,13 @@ Status CsvReader::_prepare_parse(size_t* read_line, bool* is_parse_name) {
                 _trim_tailing_spaces, _trim_double_quotes, _value_separator,
                 _value_separator_length);
     } else {
+        // If we pass `_file_slot_descs.size() - 1` to EncloseCsvTextFieldSplitter, it will cause BE core dump
+        // because currently _file_slot_descs is an empty vector.
+        // The _file_slot_descs.size() is only used to reserve space,
+        // so it's ok to pass 0 to EncloseCsvLineReaderContext
         text_line_reader_ctx = std::make_shared<EncloseCsvLineReaderContext>(
                 _line_delimiter, _line_delimiter_length, _value_separator, _value_separator_length,
-                _file_slot_descs.size() - 1, _enclose, _escape, _keep_cr);
+                0, _enclose, _escape, _keep_cr);
         _fields_splitter = std::make_unique<EncloseCsvTextFieldSplitter>(
                 _trim_tailing_spaces, false,
                 std::static_pointer_cast<EncloseCsvLineReaderContext>(text_line_reader_ctx),
@@ -947,7 +951,7 @@ Status CsvReader::_parse_col_nums(size_t* col_nums) {
         return Status::InternalError<false>(
                 "The first line is empty, can not parse column numbers");
     }
-    if (!validate_utf8(const_cast<char*>(reinterpret_cast<const char*>(ptr)), size)) {
+    if (!validate_utf8(_params, const_cast<char*>(reinterpret_cast<const char*>(ptr)), size)) {
         return Status::InternalError<false>("Only support csv data in utf8 codec");
     }
     ptr = _remove_bom(ptr, size);
@@ -964,7 +968,7 @@ Status CsvReader::_parse_col_names(std::vector<std::string>* col_names) {
     if (size == 0) {
         return Status::InternalError<false>("The first line is empty, can not parse column names");
     }
-    if (!validate_utf8(const_cast<char*>(reinterpret_cast<const char*>(ptr)), size)) {
+    if (!validate_utf8(_params, const_cast<char*>(reinterpret_cast<const char*>(ptr)), size)) {
         return Status::InternalError<false>("Only support csv data in utf8 codec");
     }
     ptr = _remove_bom(ptr, size);

@@ -346,6 +346,8 @@ void Daemon::calculate_metrics_thread() {
                 // update lst map
                 DorisMetrics::instance()->system_metrics()->get_network_traffic(
                         &lst_net_send_bytes, &lst_net_receive_bytes);
+
+                DorisMetrics::instance()->system_metrics()->update_be_avail_cpu_num();
             }
 
             DorisMetrics::instance()->all_rowsets_num->set_value(
@@ -368,16 +370,19 @@ void Daemon::je_purge_dirty_pages_thread() const {
         std::unique_lock<std::mutex> l(doris::MemInfo::je_purge_dirty_pages_lock);
         while (_stop_background_threads_latch.count() != 0 &&
                !doris::MemInfo::je_purge_dirty_pages_notify.load(std::memory_order_relaxed)) {
-            doris::MemInfo::je_purge_dirty_pages_cv.wait_for(l, std::chrono::seconds(1));
+            doris::MemInfo::je_purge_dirty_pages_cv.wait_for(l, std::chrono::milliseconds(100));
         }
         if (_stop_background_threads_latch.count() == 0) {
             break;
         }
+
+        Defer defer {[&]() {
+            doris::MemInfo::je_purge_dirty_pages_notify.store(false, std::memory_order_relaxed);
+        }};
         if (config::disable_memory_gc) {
             continue;
         }
         doris::MemInfo::je_purge_all_arena_dirty_pages();
-        doris::MemInfo::je_purge_dirty_pages_notify.store(false, std::memory_order_relaxed);
     } while (true);
 }
 
@@ -401,6 +406,13 @@ void Daemon::wg_weighted_memory_ratio_refresh_thread() {
     while (!_stop_background_threads_latch.wait_for(
             std::chrono::milliseconds(config::wg_weighted_memory_ratio_refresh_interval_ms))) {
         doris::ExecEnv::GetInstance()->workload_group_mgr()->refresh_wg_weighted_memory_limit();
+    }
+}
+
+void Daemon::calculate_workload_group_metrics_thread() {
+    while (!_stop_background_threads_latch.wait_for(
+            std::chrono::milliseconds(config::workload_group_metrics_interval_ms))) {
+        ExecEnv::GetInstance()->workload_group_mgr()->refresh_workload_group_metrics();
     }
 }
 
@@ -446,6 +458,12 @@ void Daemon::start() {
     st = Thread::create(
             "Daemon", "wg_weighted_memory_ratio_refresh_thread",
             [this]() { this->wg_weighted_memory_ratio_refresh_thread(); },
+            &_threads.emplace_back());
+    CHECK(st.ok()) << st;
+
+    st = Thread::create(
+            "Daemon", "workload_group_metrics",
+            [this]() { this->calculate_workload_group_metrics_thread(); },
             &_threads.emplace_back());
     CHECK(st.ok()) << st;
 }

@@ -27,7 +27,11 @@ import org.apache.doris.common.DdlException;
 import org.apache.doris.common.FeConstants;
 import org.apache.doris.common.UserException;
 import org.apache.doris.common.util.DebugUtil;
+import org.apache.doris.common.util.MetaLockUtils;
 import org.apache.doris.common.util.TimeUtils;
+import org.apache.doris.datasource.mvcc.MvccSnapshot;
+import org.apache.doris.datasource.mvcc.MvccTable;
+import org.apache.doris.datasource.mvcc.MvccTableInfo;
 import org.apache.doris.job.common.TaskStatus;
 import org.apache.doris.job.exception.JobException;
 import org.apache.doris.job.task.AbstractTask;
@@ -65,8 +69,10 @@ import org.apache.logging.log4j.Logger;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.Map.Entry;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
@@ -138,6 +144,8 @@ public class MTMVTask extends AbstractTask {
     private StmtExecutor executor;
     private Map<String, MTMVRefreshPartitionSnapshot> partitionSnapshots;
 
+    private final Map<MvccTableInfo, MvccSnapshot> snapshots = Maps.newHashMap();
+
     public MTMVTask() {
     }
 
@@ -170,13 +178,25 @@ public class MTMVTask extends AbstractTask {
             }
             // Every time a task is run, the relation is regenerated because baseTables and baseViews may change,
             // such as deleting a table and creating a view with the same name
-            this.relation = MTMVPlanUtil.generateMTMVRelation(mtmv, ctx);
+            Set<TableIf> tablesInPlan = MTMVPlanUtil.getBaseTableFromQuery(mtmv.getQuerySql(), ctx);
+            this.relation = MTMVPlanUtil.generateMTMVRelation(tablesInPlan, ctx);
             beforeMTMVRefresh();
-            if (mtmv.getMvPartitionInfo().getPartitionType() != MTMVPartitionType.SELF_MANAGE) {
-                MTMVPartitionUtil.alignMvPartition(mtmv);
+
+            List<TableIf> tableIfs = Lists.newArrayList(tablesInPlan);
+            tableIfs.sort(Comparator.comparing(TableIf::getId));
+
+            MTMVRefreshContext context;
+            // lock table order by id to avoid deadlock
+            MetaLockUtils.readLockTables(tableIfs);
+            try {
+                if (mtmv.getMvPartitionInfo().getPartitionType() != MTMVPartitionType.SELF_MANAGE) {
+                    MTMVPartitionUtil.alignMvPartition(mtmv);
+                }
+                context = MTMVRefreshContext.buildContext(mtmv);
+                this.needRefreshPartitions = calculateNeedRefreshPartitions(context);
+            } finally {
+                MetaLockUtils.readUnlockTables(tableIfs);
             }
-            MTMVRefreshContext context = MTMVRefreshContext.buildContext(mtmv);
-            this.needRefreshPartitions = calculateNeedRefreshPartitions(context);
             this.refreshMode = generateRefreshMode(needRefreshPartitions);
             if (refreshMode == MTMVTaskRefreshMode.NOT_REFRESH) {
                 return;
@@ -191,7 +211,7 @@ public class MTMVTask extends AbstractTask {
                 int start = i * refreshPartitionNum;
                 int end = start + refreshPartitionNum;
                 Set<String> execPartitionNames = Sets.newHashSet(needRefreshPartitions
-                        .subList(start, end > needRefreshPartitions.size() ? needRefreshPartitions.size() : end));
+                        .subList(start, Math.min(end, needRefreshPartitions.size())));
                 // need get names before exec
                 Map<String, MTMVRefreshPartitionSnapshot> execPartitionSnapshots = MTMVPartitionUtil
                         .generatePartitionSnapshots(context, relation.getBaseTablesOneLevel(), execPartitionNames);
@@ -201,7 +221,7 @@ public class MTMVTask extends AbstractTask {
             }
         } catch (Throwable e) {
             if (getStatus() == TaskStatus.RUNNING) {
-                LOG.warn("run task failed: ", e.getMessage());
+                LOG.warn("run task failed: {}", e.getMessage());
                 throw new JobException(e.getMessage(), e);
             } else {
                 // if status is not `RUNNING`,maybe the task was canceled, therefore, it is a normal situation
@@ -215,6 +235,9 @@ public class MTMVTask extends AbstractTask {
             throws Exception {
         Objects.requireNonNull(ctx, "ctx should not be null");
         StatementContext statementContext = new StatementContext();
+        for (Entry<MvccTableInfo, MvccSnapshot> entry : snapshots.entrySet()) {
+            statementContext.setSnapshot(entry.getKey(), entry.getValue());
+        }
         ctx.setStatementContext(statementContext);
         TUniqueId queryId = generateQueryId();
         lastQueryId = DebugUtil.printId(queryId);
@@ -253,10 +276,10 @@ public class MTMVTask extends AbstractTask {
     }
 
     @Override
-    protected synchronized void executeCancelLogic() {
+    protected synchronized void executeCancelLogic(boolean needWaitCancelComplete) {
         LOG.info("mtmv task cancel, taskId: {}", super.getTaskId());
         if (executor != null) {
-            executor.cancel("mtmv task cancelled");
+            executor.cancel("mtmv task cancelled", needWaitCancelComplete);
         }
         after();
     }
@@ -287,6 +310,11 @@ public class MTMVTask extends AbstractTask {
             if (tableIf instanceof MTMVBaseTableIf) {
                 MTMVBaseTableIf baseTableIf = (MTMVBaseTableIf) tableIf;
                 baseTableIf.beforeMTMVRefresh(mtmv);
+            }
+            if (tableIf instanceof MvccTable) {
+                MvccTable mvccTable = (MvccTable) tableIf;
+                MvccSnapshot mvccSnapshot = mvccTable.loadSnapshot();
+                snapshots.put(new MvccTableInfo(mvccTable), mvccSnapshot);
             }
         }
     }

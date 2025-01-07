@@ -55,8 +55,6 @@
 
 namespace doris {
 
-static bvar::Adder<size_t> g_total_tablet_schema_num("doris_total_tablet_schema_num");
-
 FieldType TabletColumn::get_field_type_by_type(PrimitiveType primitiveType) {
     switch (primitiveType) {
     case PrimitiveType::INVALID_TYPE:
@@ -845,13 +843,12 @@ void TabletIndex::to_schema_pb(TabletIndexPB* index) const {
     }
 }
 
-TabletSchema::TabletSchema() {
-    g_total_tablet_schema_num << 1;
-}
+TabletSchema::TabletSchema() = default;
 
-TabletSchema::~TabletSchema() {
-    g_total_tablet_schema_num << -1;
-    clear_column_cache_handlers();
+TabletSchema::~TabletSchema() = default;
+
+int64_t TabletSchema::get_metadata_size() const {
+    return sizeof(TabletSchema) + _vl_field_mem_size;
 }
 
 void TabletSchema::append_column(TabletColumn column, ColumnType col_type) {
@@ -996,8 +993,11 @@ void TabletSchema::init_from_pb(const TabletSchemaPB& schema, bool ignore_extrac
 
         _cols.emplace_back(std::move(column));
         if (!_cols.back()->is_extracted_column()) {
+            _vl_field_mem_size += sizeof(StringRef) + sizeof(char) * _cols.back()->name().size() +
+                                  sizeof(int32_t);
             _field_name_to_index.emplace(StringRef(_cols.back()->name()), _num_columns);
             _field_id_to_index[_cols.back()->unique_id()] = _num_columns;
+            _vl_field_mem_size += sizeof(int32_t) * 2;
         }
         _num_columns++;
     }
@@ -1036,6 +1036,8 @@ void TabletSchema::init_from_pb(const TabletSchemaPB& schema, bool ignore_extrac
     } else {
         _inverted_index_storage_format = schema.inverted_index_storage_format();
     }
+
+    update_metadata_size();
 }
 
 void TabletSchema::copy_from(const TabletSchema& tablet_schema) {
@@ -1043,6 +1045,21 @@ void TabletSchema::copy_from(const TabletSchema& tablet_schema) {
     tablet_schema.to_schema_pb(&tablet_schema_pb);
     init_from_pb(tablet_schema_pb);
     _table_id = tablet_schema.table_id();
+}
+
+void TabletSchema::shawdow_copy_without_columns(const TabletSchema& tablet_schema) {
+    *this = tablet_schema;
+    _field_path_to_index.clear();
+    _field_name_to_index.clear();
+    _field_id_to_index.clear();
+    _num_columns = 0;
+    _num_variant_columns = 0;
+    _num_null_columns = 0;
+    _num_key_columns = 0;
+    _cols.clear();
+    _vl_field_mem_size = 0;
+    // notice : do not ref columns
+    _column_cache_handlers.clear();
 }
 
 void TabletSchema::update_index_info_from(const TabletSchema& tablet_schema) {

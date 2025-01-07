@@ -38,8 +38,10 @@
 #include "vec/columns/column.h"
 #include "vec/core/block.h"
 #include "vec/core/column_with_type_and_name.h"
+#include "vec/core/types.h"
 #include "vec/core/wide_integer.h"
 #include "vec/data_types/data_type.h"
+#include "vec/data_types/data_type_ipv6.h"
 #include "vec/exprs/vexpr_fwd.h"
 #include "vec/functions/function.h"
 
@@ -142,6 +144,9 @@ public:
     TypeDescriptor type() { return _type; }
 
     bool is_slot_ref() const { return _node_type == TExprNodeType::SLOT_REF; }
+
+    bool is_column_ref() const { return _node_type == TExprNodeType::COLUMN_REF; }
+
     virtual bool is_literal() const { return false; }
 
     TExprNodeType::type node_type() const { return _node_type; }
@@ -305,7 +310,6 @@ protected:
 
     // ensuring uniqueness during index traversal
     uint32_t _index_unique_id = 0;
-    bool _can_fast_execute = false;
     bool _enable_inverted_index_query = true;
     uint32_t _in_list_value_count_threshold = 10;
 };
@@ -454,6 +458,20 @@ Status create_texpr_literal_node(const void* data, TExprNode* node, int precisio
         string_literal.__set_value(origin_value->to_string());
         (*node).__set_string_literal(string_literal);
         (*node).__set_type(create_type_desc(PrimitiveType::TYPE_STRING));
+    } else if constexpr (T == TYPE_IPV4) {
+        const auto* origin_value = reinterpret_cast<const IPv4*>(data);
+        (*node).__set_node_type(TExprNodeType::IPV4_LITERAL);
+        TIPv4Literal literal;
+        literal.__set_value(*origin_value);
+        (*node).__set_ipv4_literal(literal);
+        (*node).__set_type(create_type_desc(PrimitiveType::TYPE_IPV4));
+    } else if constexpr (T == TYPE_IPV6) {
+        const auto* origin_value = reinterpret_cast<const IPv6*>(data);
+        (*node).__set_node_type(TExprNodeType::IPV6_LITERAL);
+        TIPv6Literal literal;
+        literal.__set_value(vectorized::DataTypeIPv6::to_string(*origin_value));
+        (*node).__set_ipv6_literal(literal);
+        (*node).__set_type(create_type_desc(PrimitiveType::TYPE_IPV6));
     } else {
         return Status::InvalidArgument("Invalid argument type!");
     }

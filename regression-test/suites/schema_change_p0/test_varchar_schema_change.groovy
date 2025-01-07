@@ -22,7 +22,7 @@ suite ("test_varchar_schema_change") {
          def jobStateResult = sql """  SHOW ALTER TABLE COLUMN WHERE IndexName='${tableName}' ORDER BY createtime DESC LIMIT 1 """
          return jobStateResult[0][9]
     }
-    
+
     def tableName = "varchar_schema_change_regression_test"
 
     try {
@@ -55,7 +55,7 @@ suite ("test_varchar_schema_change") {
                 """
             exception "Cannot shorten string length"
         }
-        
+
         // test {//为什么第一次改没发生Nothing is changed错误？查看branch-1.2-lts代码
         //     sql """ alter table ${tableName} modify column c2 varchar(20)
         //             """
@@ -121,7 +121,7 @@ suite ("test_varchar_schema_change") {
                 String tablet_id = tablet[0]
                 backend_id = tablet[2]
                 logger.info("run compaction:" + tablet_id)
-                (code, out, err) = be_run_cumulative_compaction(backendId_to_backendIP.get(backend_id), backendId_to_backendHttpPort.get(backend_id), tablet_id)
+                def (code, out, err) = be_run_cumulative_compaction(backendId_to_backendIP.get(backend_id), backendId_to_backendHttpPort.get(backend_id), tablet_id)
                 logger.info("Run compaction: code=" + code + ", out=" + out + ", err=" + err)
         }
 
@@ -132,7 +132,7 @@ suite ("test_varchar_schema_change") {
                     Thread.sleep(100)
                     String tablet_id = tablet[0]
                     backend_id = tablet[2]
-                    (code, out, err) = be_get_compaction_status(backendId_to_backendIP.get(backend_id), backendId_to_backendHttpPort.get(backend_id), tablet_id)
+                    def (code, out, err) = be_get_compaction_status(backendId_to_backendIP.get(backend_id), backendId_to_backendHttpPort.get(backend_id), tablet_id)
                     logger.info("Get compaction status: code=" + code + ", out=" + out + ", err=" + err)
                     assertEquals(code, 0)
                     def compactionStatus = parseJson(out.trim())
@@ -146,8 +146,8 @@ suite ("test_varchar_schema_change") {
         qt_sc " select min(c2),max(c2) from ${tableName} group by c0 order by 1,2; "
 
         sleep(5000)
-        sql """ alter table ${tableName} 
-        modify column c2 varchar(40), 
+        sql """ alter table ${tableName}
+        modify column c2 varchar(40),
         modify column c3 varchar(6) DEFAULT '0'
         """
         max_try_time = 1200

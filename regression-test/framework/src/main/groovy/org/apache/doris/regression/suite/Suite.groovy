@@ -657,6 +657,8 @@ class Suite implements GroovyInterceptable {
         runAction(new WaitForAction(context), actionSupplier)
         if (ObjectUtils.isNotEmpty(insertSql)){
             sql insertSql
+        } else {
+            sql "SYNC"
         }
         if (cleanOperator==true){
             if (ObjectUtils.isEmpty(tbName)) throw new RuntimeException("tbName cloud not be null")
@@ -772,6 +774,11 @@ class Suite implements GroovyInterceptable {
         def localFile = file.canonicalPath
         log.info("Set stream load input: ${file.canonicalPath}".toString())
         return localFile;
+    }
+
+    boolean enableJdbcTest() {
+        String enable = context.config.otherConfigs.get("enableJdbcTest")
+        return enable != null && enable.equalsIgnoreCase("true")
     }
 
     boolean enableBrokerLoad() {
@@ -1515,6 +1522,22 @@ class Suite implements GroovyInterceptable {
         sql "analyze table ${db}.${mv_name} with sync;"
     }
 
+    def create_async_partition_mv = { db, mv_name, mv_sql, partition_col ->
+
+        sql """DROP MATERIALIZED VIEW IF EXISTS ${db}.${mv_name}"""
+        sql"""
+        CREATE MATERIALIZED VIEW ${db}.${mv_name} 
+        BUILD IMMEDIATE REFRESH COMPLETE ON MANUAL 
+        PARTITION BY ${partition_col} 
+        DISTRIBUTED BY RANDOM BUCKETS 2 
+        PROPERTIES ('replication_num' = '1')  
+        AS ${mv_sql}
+        """
+        def job_name = getJobName(db, mv_name);
+        waitingMTMVTaskFinished(job_name)
+        sql "analyze table ${db}.${mv_name} with sync;"
+    }
+
     // mv not part in rewrite process
     def mv_not_part_in = { query_sql, mv_name ->
         logger.info("query_sql = " + query_sql + ", mv_names = " + mv_name)
@@ -1591,6 +1614,9 @@ class Suite implements GroovyInterceptable {
                     for (String mv_name : mv_names) {
                         success = success && result.contains("(${mv_name})")
                     }
+                    if (!success) {
+                        logger.info("mv_rewrite_all_success fail =" + result)
+                    }
                     Assert.assertEquals(true, success)
                 }
             }
@@ -1601,9 +1627,12 @@ class Suite implements GroovyInterceptable {
             check { result ->
                 boolean success = true;
                 for (String mv_name : mv_names) {
-                    success = success && result.contains("${mv_name} chose")
+                    def contains = result.contains("${mv_name} chose")
+                    if (!contains) {
+                        logger.info("mv_rewrite_all_success fail =" + result)
+                    }
+                    Assert.assertEquals(true, contains)
                 }
-                Assert.assertEquals(true, success)
             }
         }
     }
@@ -1629,6 +1658,9 @@ class Suite implements GroovyInterceptable {
                     for (String mv_name : mv_names) {
                         success = success || result.contains("(${mv_name})")
                     }
+                    if (!success) {
+                        logger.info("mv_rewrite_any_success fail =" + result)
+                    }
                     Assert.assertEquals(true, success)
                 }
             }
@@ -1640,6 +1672,9 @@ class Suite implements GroovyInterceptable {
                 boolean success = false;
                 for (String mv_name : mv_names) {
                     success = success || result.contains("${mv_name} chose")
+                }
+                if (!success) {
+                    logger.info("mv_rewrite_any_success fail =" + result)
                 }
                 Assert.assertEquals(true, success)
             }
@@ -1661,6 +1696,9 @@ class Suite implements GroovyInterceptable {
                         def each_result =  splitResult.length == 2 ? splitResult[0].contains(mv_name) : false
                         success = success && (result.contains("(${mv_name})") || each_result)
                     }
+                    if (!success) {
+                        logger.info("mv_rewrite_all_success_without_check_chosen fail =" + result)
+                    }
                     Assert.assertEquals(true, success)
                 }
             }
@@ -1673,6 +1711,9 @@ class Suite implements GroovyInterceptable {
                 for (String mv_name : mv_names) {
                     boolean stepSuccess = result.contains("${mv_name} chose") || result.contains("${mv_name} not chose")
                     success = success && stepSuccess
+                }
+                if (!success) {
+                    logger.info("mv_rewrite_all_success_without_check_chosen fail =" + result)
                 }
                 Assert.assertEquals(true, success)
             }
@@ -1694,6 +1735,9 @@ class Suite implements GroovyInterceptable {
                         def each_result =  splitResult.length == 2 ? splitResult[0].contains(mv_name) : false
                         success = success || (result.contains("(${mv_name})") || each_result)
                     }
+                    if (!success) {
+                        logger.info("mv_rewrite_any_success_without_check_chosen fail =" + result)
+                    }
                     Assert.assertEquals(true, success)
                 }
             }
@@ -1705,6 +1749,9 @@ class Suite implements GroovyInterceptable {
                 boolean success = false
                 for (String mv_name : mv_names) {
                     success = success || result.contains("${mv_name} chose") || result.contains("${mv_name} not chose")
+                }
+                if (!success) {
+                    logger.info("mv_rewrite_any_success_without_check_chosen fail =" + result)
                 }
                 Assert.assertEquals(true, success)
             }
@@ -1764,6 +1811,9 @@ class Suite implements GroovyInterceptable {
                         boolean stepFail = !result.contains("(${mv_name})")
                         fail = fail && stepFail
                     }
+                    if (!fail) {
+                        logger.info("mv_rewrite_all_fail =" + result)
+                    }
                     Assert.assertEquals(true, fail)
                 }
             }
@@ -1776,6 +1826,9 @@ class Suite implements GroovyInterceptable {
                 for (String mv_name : mv_names) {
                     boolean stepFail = result.contains("${mv_name} fail")
                     fail = fail && stepFail
+                }
+                if (!fail) {
+                    logger.info("mv_rewrite_all_fail =" + result)
                 }
                 Assert.assertEquals(true, fail)
             }
@@ -1794,6 +1847,9 @@ class Suite implements GroovyInterceptable {
                     for (String mv_name : mv_names) {
                         fail = fail || !result.contains("(${mv_name})")
                     }
+                    if (!fail) {
+                        logger.info("mv_rewrite_any_fail =" + result)
+                    }
                     Assert.assertEquals(true, fail)
                 }
             }
@@ -1805,6 +1861,9 @@ class Suite implements GroovyInterceptable {
                 boolean fail = false
                 for (String mv_name : mv_names) {
                     fail = fail || result.contains("${mv_name} fail")
+                }
+                if (!fail) {
+                    logger.info("mv_rewrite_any_fail =" + result)
                 }
                 Assert.assertEquals(true, fail)
             }

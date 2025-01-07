@@ -35,6 +35,7 @@
 
 #include "common/status.h"
 #include "gutil/stringprintf.h"
+#include "olap/metadata_adder.h"
 #include "olap/olap_common.h"
 #include "olap/rowset/segment_v2/options.h"
 #include "runtime/define_primitive_type.h"
@@ -61,7 +62,7 @@ class TabletColumn;
 
 using TabletColumnPtr = std::shared_ptr<TabletColumn>;
 
-class TabletColumn {
+class TabletColumn : public MetadataAdder<TabletColumn> {
 public:
     TabletColumn();
     TabletColumn(const ColumnPB& column);
@@ -223,7 +224,7 @@ bool operator!=(const TabletColumn& a, const TabletColumn& b);
 
 class TabletSchema;
 
-class TabletIndex {
+class TabletIndex : public MetadataAdder<TabletIndex> {
 public:
     TabletIndex() = default;
     void init_from_thrift(const TOlapTableIndex& index, const TabletSchema& tablet_schema);
@@ -265,7 +266,7 @@ private:
     std::map<string, string> _properties;
 };
 
-class TabletSchema {
+class TabletSchema : public MetadataAdder<TabletSchema> {
 public:
     enum ColumnType { NORMAL = 0, DROPPED = 1, VARIANT = 2 };
     // TODO(yingchun): better to make constructor as private to avoid
@@ -299,6 +300,8 @@ public:
     // Must make sure the row column is always the last column
     void add_row_column();
     void copy_from(const TabletSchema& tablet_schema);
+    // lightweight copy, take care of lifecycle of TabletColumn
+    void shawdow_copy_without_columns(const TabletSchema& tablet_schema);
     void update_index_info_from(const TabletSchema& tablet_schema);
     std::string to_key() const;
     // Don't use.
@@ -359,7 +362,10 @@ public:
     bool has_inverted_index() const {
         for (const auto& index : _indexes) {
             if (index.index_type() == IndexType::INVERTED) {
-                return true;
+                //if index_id == -1, ignore it.
+                if (!index.col_unique_ids().empty() && index.col_unique_ids()[0] >= 0) {
+                    return true;
+                }
             }
         }
         return false;
@@ -475,9 +481,12 @@ public:
         return _inverted_index_storage_format;
     }
 
+    int64_t get_metadata_size() const override;
+
 private:
     friend bool operator==(const TabletSchema& a, const TabletSchema& b);
     friend bool operator!=(const TabletSchema& a, const TabletSchema& b);
+    TabletSchema(const TabletSchema&) = default;
 
     void clear_column_cache_handlers();
 
@@ -520,6 +529,8 @@ private:
     bool _store_row_column = false;
     bool _skip_write_index_on_load = false;
     InvertedIndexStorageFormatPB _inverted_index_storage_format = InvertedIndexStorageFormatPB::V1;
+
+    int64_t _vl_field_mem_size {0}; // variable length field
 };
 
 bool operator==(const TabletSchema& a, const TabletSchema& b);

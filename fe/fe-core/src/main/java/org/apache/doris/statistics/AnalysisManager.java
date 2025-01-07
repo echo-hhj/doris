@@ -99,6 +99,7 @@ import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
@@ -114,6 +115,7 @@ public class AnalysisManager implements Writable {
     private StatisticsCache statisticsCache;
 
     private AnalysisTaskExecutor taskExecutor;
+    private ThreadPoolExecutor dropStatsExecutors;
 
     // Store task information in metadata.
     protected final NavigableMap<Long, AnalysisInfo> analysisTaskInfoMap =
@@ -135,8 +137,13 @@ public class AnalysisManager implements Writable {
     public AnalysisManager() {
         if (!Env.isCheckpointThread()) {
             this.taskExecutor = new AnalysisTaskExecutor(Config.statistics_simultaneously_running_task_num,
-                    Integer.MAX_VALUE);
+                    Integer.MAX_VALUE, "Manual Analysis Job Executor");
             this.statisticsCache = new StatisticsCache();
+            this.dropStatsExecutors = ThreadPoolManager.newDaemonThreadPool(
+                    1, 3, 10,
+                    TimeUnit.DAYS, new LinkedBlockingQueue<>(20),
+                    new ThreadPoolExecutor.DiscardPolicy(),
+                    "Drop stats executor", true);
         }
     }
 
@@ -144,7 +151,8 @@ public class AnalysisManager implements Writable {
         return statisticsCache;
     }
 
-    public void createAnalyze(AnalyzeStmt analyzeStmt, boolean proxy) throws DdlException, AnalysisException {
+    public void createAnalyze(AnalyzeStmt analyzeStmt, boolean proxy)
+            throws DdlException, AnalysisException, ExecutionException, InterruptedException {
         if (!StatisticsUtil.statsTblAvailable() && !FeConstants.runningUnitTest) {
             throw new DdlException("Stats table not available, please make sure your cluster status is normal");
         }
@@ -157,10 +165,8 @@ public class AnalysisManager implements Writable {
 
     public void createAnalysisJobs(AnalyzeDBStmt analyzeDBStmt, boolean proxy) throws DdlException, AnalysisException {
         DatabaseIf<TableIf> db = analyzeDBStmt.getDb();
-        // Using auto analyzer if user specifies.
         if (analyzeDBStmt.getAnalyzeProperties().getProperties().containsKey("use.auto.analyzer")) {
-            Env.getCurrentEnv().getStatisticsAutoCollector().analyzeDb(db);
-            return;
+            throw new DdlException("Analyze database doesn't support use.auto.analyzer property.");
         }
         List<AnalysisInfo> analysisInfos = buildAnalysisInfosForDB(db, analyzeDBStmt.getAnalyzeProperties());
         if (!analyzeDBStmt.isSync()) {
@@ -208,22 +214,12 @@ public class AnalysisManager implements Writable {
     }
 
     // Each analyze stmt corresponding to an analysis job.
-    public void createAnalysisJob(AnalyzeTblStmt stmt, boolean proxy) throws DdlException, AnalysisException {
+    public void createAnalysisJob(AnalyzeTblStmt stmt, boolean proxy)
+            throws DdlException, AnalysisException, ExecutionException, InterruptedException {
         // Using auto analyzer if user specifies.
         if (stmt.getAnalyzeProperties().getProperties().containsKey("use.auto.analyzer")) {
             StatisticsAutoCollector autoCollector = Env.getCurrentEnv().getStatisticsAutoCollector();
-            if (autoCollector.skip(stmt.getTable())) {
-                return;
-            }
-            List<AnalysisInfo> jobs = new ArrayList<>();
-            autoCollector.createAnalyzeJobForTbl(stmt.getDb(), jobs, stmt.getTable());
-            if (jobs.isEmpty()) {
-                return;
-            }
-            AnalysisInfo job = autoCollector.getNeedAnalyzeColumns(jobs.get(0));
-            if (job != null) {
-                Env.getCurrentEnv().getStatisticsAutoCollector().createSystemAnalysisJob(job);
-            }
+            autoCollector.processOneJob(stmt.getTable(), JobPriority.MANUAL_AUTO);
             return;
         }
         AnalysisInfo jobInfo = buildAndAssignJob(stmt);
@@ -347,7 +343,6 @@ public class AnalysisManager implements Writable {
         infoBuilder.setAnalysisMode(analysisMode);
         infoBuilder.setAnalysisMethod(analysisMethod);
         infoBuilder.setScheduleType(scheduleType);
-        infoBuilder.setLastExecTimeInMs(0);
         infoBuilder.setCronExpression(cronExpression);
         infoBuilder.setForceFull(stmt.forceFull());
         infoBuilder.setUsingSqlForPartitionColumn(stmt.usingSqlForPartitionColumn());
@@ -377,6 +372,8 @@ public class AnalysisManager implements Writable {
                 && analysisMethod.equals(AnalysisMethod.SAMPLE));
         long rowCount = StatisticsUtil.isEmptyTable(table, analysisMethod) ? 0 : table.getRowCount();
         infoBuilder.setRowCount(rowCount);
+        infoBuilder.setPriority(JobPriority.MANUAL);
+        infoBuilder.setTableVersion(table instanceof OlapTable ? ((OlapTable) table).getVisibleVersion() : 0);
         return infoBuilder.build();
     }
 
@@ -665,16 +662,49 @@ public class AnalysisManager implements Writable {
             long catalogId = table.getDatabase().getCatalog().getId();
             long dbId = table.getDatabase().getId();
             long tableId = table.getId();
-            removeTableStats(tableId);
-            Env.getCurrentEnv().getEditLog().logDeleteTableStats(new TableStatsDeletionLog(tableId));
-            Set<String> cols = table.getSchemaAllIndexes(false).stream().map(Column::getName)
-                    .collect(Collectors.toSet());
-            invalidateLocalStats(catalogId, dbId, tableId, null, tableStats);
-            // Drop stats ddl is master only operation.
-            invalidateRemoteStats(catalogId, dbId, tableId, cols, true);
-            StatisticsRepository.dropStatisticsByColNames(catalogId, dbId, table.getId(), cols);
+            asyncDropStatsTask(table, catalogId, dbId, tableId, tableStats);
         } catch (Throwable e) {
             LOG.warn("Failed to drop stats for table {}", table.getName(), e);
+        }
+    }
+
+    class DropStatsTask implements Runnable {
+        private final long catalogId;
+        private final long dbId;
+        private final long tableId;
+        private final TableStatsMeta tableStats;
+        private final TableIf table;
+
+        public DropStatsTask(TableIf table, long catalogId, long dbId, long tableId, TableStatsMeta tableStats) {
+            this.catalogId = catalogId;
+            this.dbId = dbId;
+            this.tableId = tableId;
+            this.tableStats = tableStats;
+            this.table = table;
+        }
+
+        @Override
+        public void run() {
+            try {
+                removeTableStats(tableId);
+                Env.getCurrentEnv().getEditLog().logDeleteTableStats(new TableStatsDeletionLog(tableId));
+                Set<String> cols = table.getSchemaAllIndexes(false).stream().map(Column::getName)
+                        .collect(Collectors.toSet());
+                StatisticsRepository.dropStatisticsByColNames(catalogId, dbId, table.getId(), cols);
+                invalidateLocalStats(catalogId, dbId, tableId, null, tableStats);
+                // Drop stats ddl is master only operation.
+                invalidateRemoteStats(catalogId, dbId, tableId, cols, true);
+            } catch (Throwable e) {
+                LOG.warn("Failed to drop stats for table {}", table.getName(), e);
+            }
+        }
+    }
+
+    public void asyncDropStatsTask(TableIf table, long catalogId, long dbId, long tableId, TableStatsMeta tableStats) {
+        try {
+            dropStatsExecutors.submit(new DropStatsTask(table, catalogId, dbId, tableId, tableStats));
+        } catch (Throwable t) {
+            LOG.info("Failed to submit async drop stats job. reason: {}", t.getMessage());
         }
     }
 

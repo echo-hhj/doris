@@ -227,6 +227,7 @@ import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -709,13 +710,6 @@ public class StmtExecutor {
                         throw new NereidsException(new UserException("The statement has been forwarded to master FE("
                                 + Env.getCurrentEnv().getSelfNode().getHost() + ") and failed to execute"
                                 + " because Master FE is not ready. You may need to check FE's status"));
-                    }
-                    if (context.getSessionVariable().isEnableInsertGroupCommit()) {
-                        // FIXME: Group commit insert does not need to forward to master
-                        //  Nereids does not support group commit, so we can not judge if should forward
-                        //  Here throw an exception to fallback to legacy planner and let legacy judge if should forward
-                        //  After Nereids support group commit, we can remove this exception
-                        throw new NereidsException(new UserException("Nereids does not support group commit insert"));
                     }
                     forwardToMaster();
                     if (masterOpExecutor != null && masterOpExecutor.getQueryId() != null) {
@@ -1266,6 +1260,7 @@ public class StmtExecutor {
             }
             // table id in tableList is in ascending order because that table map is a sorted map
             List<TableIf> tables = Lists.newArrayList(tableMap.values());
+            tables.sort((Comparator.comparing(TableIf::getId)));
             int analyzeTimes = 2;
             for (int i = 1; i <= analyzeTimes; i++) {
                 MetaLockUtils.readLockTables(tables);
@@ -1352,6 +1347,8 @@ public class StmtExecutor {
         if (context.getSessionVariable().isEnableInsertGroupCommit() && parsedStmt instanceof NativeInsertStmt) {
             NativeInsertStmt nativeInsertStmt = (NativeInsertStmt) parsedStmt;
             nativeInsertStmt.analyzeGroupCommit(new Analyzer(context.getEnv(), context));
+            redirectStatus = parsedStmt.getRedirectStatus();
+            isForwardedToMaster = shouldForwardToMaster();
         }
         redirectStatus = parsedStmt.getRedirectStatus();
     }
@@ -1491,7 +1488,7 @@ public class StmtExecutor {
     }
 
     // Because this is called by other thread
-    public void cancel(String message) {
+    public void cancel(String message, boolean needWaitCancelComplete) {
         Optional<InsertOverwriteTableCommand> insertOverwriteTableCommand = getInsertOverwriteTableCommand();
         if (insertOverwriteTableCommand.isPresent()) {
             // If the be scheduling has not been triggered yet, cancel the scheduling first
@@ -1507,10 +1504,14 @@ public class StmtExecutor {
         if (parsedStmt instanceof AnalyzeTblStmt || parsedStmt instanceof AnalyzeDBStmt) {
             Env.getCurrentEnv().getAnalysisManager().cancelSyncTask(context);
         }
-        if (insertOverwriteTableCommand.isPresent()) {
+        if (insertOverwriteTableCommand.isPresent() && needWaitCancelComplete) {
             // Wait for the command to run or cancel completion
             insertOverwriteTableCommand.get().waitNotRunning();
         }
+    }
+
+    public void cancel(String message) {
+        cancel(message, true);
     }
 
     private Optional<InsertOverwriteTableCommand> getInsertOverwriteTableCommand() {
@@ -1805,7 +1806,8 @@ public class StmtExecutor {
         // TODO support arrow flight sql
         // NOTE: If you want to add another condition about SessionVariable, please consider whether
         // add to CacheAnalyzer.commonCacheCondition
-        if (channel != null && !isOutfileQuery && CacheAnalyzer.canUseCache(context.getSessionVariable())) {
+        if (channel != null && !isOutfileQuery && CacheAnalyzer.canUseCache(context.getSessionVariable())
+                && parsedStmt.getOrigStmt() != null && parsedStmt.getOrigStmt().originStmt != null) {
             if (queryStmt instanceof QueryStmt || queryStmt instanceof LogicalPlanAdapter) {
                 handleCacheStmt(cacheAnalyzer, channel);
                 LOG.info("Query {} finished", DebugUtil.printId(context.queryId));
@@ -2285,6 +2287,7 @@ public class StmtExecutor {
                             response.getStatus(), i);
                     if (i < maxRetry) {
                         List<TableIf> tables = Lists.newArrayList(insertStmt.getTargetTable());
+                        tables.sort((Comparator.comparing(TableIf::getId)));
                         MetaLockUtils.readLockTables(tables);
                         try {
                             insertStmt.reset();
@@ -2513,7 +2516,7 @@ public class StmtExecutor {
         context.getState().setOk();
     }
 
-    private void handleAnalyzeStmt() throws DdlException, AnalysisException {
+    private void handleAnalyzeStmt() throws DdlException, AnalysisException, ExecutionException, InterruptedException {
         context.env.getAnalysisManager().createAnalyze((AnalyzeStmt) parsedStmt, isProxy);
     }
 

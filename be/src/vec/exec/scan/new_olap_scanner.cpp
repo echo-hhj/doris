@@ -520,14 +520,6 @@ Status NewOlapScanner::close(RuntimeState* state) {
         return Status::OK();
     }
 
-    // olap scan node will call scanner.close() when finished
-    // will release resources here
-    // if not clear rowset readers in read_params here
-    // readers will be release when runtime state deconstructed but
-    // deconstructor in reader references runtime state
-    // so that it will core
-    _tablet_reader_params.rs_splits.clear();
-    _tablet_reader.reset();
     RETURN_IF_ERROR(VScanner::close(state));
     return Status::OK();
 }
@@ -656,7 +648,6 @@ void NewOlapScanner::_collect_profile_before_close() {
     COUNTER_UPDATE(Parent->_total_segment_counter, stats.total_segment_number);
 
     // Update counters for NewOlapScanner
-    // Update counters from tablet reader's stats
     auto& stats = _tablet_reader->stats();
 
     if (_parent) {
@@ -676,6 +667,21 @@ void NewOlapScanner::_collect_profile_before_close() {
     tablet->query_scan_bytes->increment(_scan_bytes);
     tablet->query_scan_rows->increment(_scan_rows);
     tablet->query_scan_count->increment(1);
+}
+
+void NewOlapScanner::_update_bytes_and_rows_read() {
+    VScanner::_update_bytes_and_rows_read();
+    if (_query_statistics) {
+        auto& stats = _tablet_reader->stats();
+        int64_t delta_local = stats.file_cache_stats.bytes_read_from_local - _bytes_read_from_local;
+        int64_t delta_remote =
+                stats.file_cache_stats.bytes_read_from_remote - _bytes_read_from_remote;
+        _query_statistics->add_scan_bytes_from_local_storage(delta_local);
+        _query_statistics->add_scan_bytes_from_remote_storage(delta_remote);
+        _query_statistics->add_scan_bytes(delta_local + delta_remote);
+        _bytes_read_from_local = stats.file_cache_stats.bytes_read_from_local;
+        _bytes_read_from_remote = stats.file_cache_stats.bytes_read_from_remote;
+    }
 }
 
 } // namespace doris::vectorized

@@ -25,19 +25,17 @@ import org.apache.doris.datasource.CatalogIf;
 import org.apache.doris.datasource.ExternalCatalog;
 import org.apache.doris.datasource.ExternalMetaCacheMgr;
 import org.apache.doris.datasource.hive.HMSExternalCatalog;
-import org.apache.doris.datasource.hive.HiveMetaStoreClientHelper;
 import org.apache.doris.thrift.TIcebergMetadataParams;
 
 import com.github.benmanes.caffeine.cache.LoadingCache;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
+import org.apache.commons.lang3.exception.ExceptionUtils;
 import org.apache.iceberg.ManifestFiles;
 import org.apache.iceberg.SerializableTable;
 import org.apache.iceberg.Snapshot;
 import org.apache.iceberg.Table;
-import org.apache.iceberg.catalog.Catalog;
-import org.apache.iceberg.catalog.TableIdentifier;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.HashMap;
@@ -104,18 +102,21 @@ public class IcebergMetadataCache {
 
     @NotNull
     private Table loadTable(IcebergMetadataCacheKey key) {
-        Catalog icebergCatalog;
+        IcebergMetadataOps ops;
         if (key.catalog instanceof HMSExternalCatalog) {
-            icebergCatalog = ((HMSExternalCatalog) key.catalog).getIcebergHiveCatalog();
+            ops = ((HMSExternalCatalog) key.catalog).getIcebergMetadataOps();
         } else if (key.catalog instanceof IcebergExternalCatalog) {
-            icebergCatalog = ((IcebergExternalCatalog) key.catalog).getCatalog();
+            ops = (IcebergMetadataOps) (((IcebergExternalCatalog) key.catalog).getMetadataOps());
         } else {
             throw new RuntimeException("Only support 'hms' and 'iceberg' type for iceberg table");
         }
-        Table icebergTable = HiveMetaStoreClientHelper.ugiDoAs(((ExternalCatalog) key.catalog).getConfiguration(),
-                () -> icebergCatalog.loadTable(TableIdentifier.of(key.dbName, key.tableName)));
-        initIcebergTableFileIO(icebergTable, key.catalog.getProperties());
-        return icebergTable;
+        try {
+            return ((ExternalCatalog) key.catalog).getPreExecutionAuthenticator().execute(()
+                    -> ops.loadTable(key.dbName, key.tableName));
+        } catch (Exception e) {
+            throw new RuntimeException(ExceptionUtils.getRootCauseMessage(e), e);
+        }
+
     }
 
     public void invalidateCatalogCache(long catalogId) {

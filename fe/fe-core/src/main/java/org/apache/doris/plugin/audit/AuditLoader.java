@@ -154,6 +154,8 @@ public class AuditLoader extends Plugin implements AuditPlugin {
         logBuffer.append(event.returnRows).append("\t");
         logBuffer.append(event.shuffleSendRows).append("\t");
         logBuffer.append(event.shuffleSendBytes).append("\t");
+        logBuffer.append(event.scanBytesFromLocalStorage).append("\t");
+        logBuffer.append(event.scanBytesFromRemoteStorage).append("\t");
         logBuffer.append(event.stmtId).append("\t");
         logBuffer.append(event.isQuery ? 1 : 0).append("\t");
         logBuffer.append(event.isNereids ? 1 : 0).append("\t");
@@ -176,8 +178,8 @@ public class AuditLoader extends Plugin implements AuditPlugin {
     public synchronized void loadIfNecessary(boolean force) {
         long currentTime = System.currentTimeMillis();
 
-        if (force || auditLogBuffer.length() >= GlobalVariable.auditPluginMaxBatchBytes
-                || currentTime - lastLoadTimeAuditLog >= GlobalVariable.auditPluginMaxBatchInternalSec * 1000) {
+        if (auditLogBuffer.length() != 0 && (force || auditLogBuffer.length() >= GlobalVariable.auditPluginMaxBatchBytes
+                || currentTime - lastLoadTimeAuditLog >= GlobalVariable.auditPluginMaxBatchInternalSec * 1000)) {
             // begin to load
             try {
                 String token = "";
@@ -225,9 +227,9 @@ public class AuditLoader extends Plugin implements AuditPlugin {
                     AuditEvent event = auditEventQueue.poll(5, TimeUnit.SECONDS);
                     if (event != null) {
                         assembleAudit(event);
-                        // process all audit logs
-                        loadIfNecessary(false);
                     }
+                    // process all audit logs
+                    loadIfNecessary(false);
                 } catch (InterruptedException ie) {
                     if (LOG.isDebugEnabled()) {
                         LOG.debug("encounter exception when loading current audit batch", ie);

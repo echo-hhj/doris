@@ -179,10 +179,8 @@ void ParquetColumnReader::_generate_read_ranges(int64_t start_index, int64_t end
 Status ScalarColumnReader::init(io::FileReaderSPtr file, FieldSchema* field, size_t max_buf_size) {
     _field_schema = field;
     auto& chunk_meta = _chunk_meta.meta_data;
-    int64_t chunk_start =
-            chunk_meta.__isset.dictionary_page_offset && chunk_meta.dictionary_page_offset > 0
-                    ? chunk_meta.dictionary_page_offset
-                    : chunk_meta.data_page_offset;
+    int64_t chunk_start = has_dict_page(chunk_meta) ? chunk_meta.dictionary_page_offset
+                                                    : chunk_meta.data_page_offset;
     size_t chunk_len = chunk_meta.total_compressed_size;
     size_t prefetch_buffer_size = std::min(chunk_len, max_buf_size);
     if (typeid_cast<io::MergeRangeFileReader*>(file.get())) {
@@ -592,8 +590,8 @@ Status ArrayColumnReader::read_column_data(ColumnPtr& doris_column, DataTypePtr&
     MutableColumnPtr data_column;
     NullMap* null_map_ptr = nullptr;
     if (doris_column->is_nullable()) {
-        auto* nullable_column = reinterpret_cast<vectorized::ColumnNullable*>(
-                (*std::move(doris_column)).mutate().get());
+        auto mutable_column = doris_column->assume_mutable();
+        auto* nullable_column = static_cast<vectorized::ColumnNullable*>(mutable_column.get());
         null_map_ptr = &nullable_column->get_null_map_data();
         data_column = nullable_column->get_nested_column_ptr();
     } else {
@@ -643,8 +641,8 @@ Status MapColumnReader::read_column_data(ColumnPtr& doris_column, DataTypePtr& t
     MutableColumnPtr data_column;
     NullMap* null_map_ptr = nullptr;
     if (doris_column->is_nullable()) {
-        auto* nullable_column = reinterpret_cast<vectorized::ColumnNullable*>(
-                (*std::move(doris_column)).mutate().get());
+        auto mutable_column = doris_column->assume_mutable();
+        auto* nullable_column = static_cast<vectorized::ColumnNullable*>(mutable_column.get());
         null_map_ptr = &nullable_column->get_null_map_data();
         data_column = nullable_column->get_nested_column_ptr();
     } else {
@@ -712,8 +710,8 @@ Status StructColumnReader::read_column_data(ColumnPtr& doris_column, DataTypePtr
     MutableColumnPtr data_column;
     NullMap* null_map_ptr = nullptr;
     if (doris_column->is_nullable()) {
-        auto* nullable_column = reinterpret_cast<vectorized::ColumnNullable*>(
-                (*std::move(doris_column)).mutate().get());
+        auto mutable_column = doris_column->assume_mutable();
+        auto* nullable_column = static_cast<vectorized::ColumnNullable*>(mutable_column.get());
         null_map_ptr = &nullable_column->get_null_map_data();
         data_column = nullable_column->get_nested_column_ptr();
     } else {
@@ -794,8 +792,8 @@ Status StructColumnReader::read_column_data(ColumnPtr& doris_column, DataTypePtr
         auto& doris_field = doris_struct.get_column_ptr(idx);
         auto& doris_type = const_cast<DataTypePtr&>(doris_struct_type->get_element(idx));
         DCHECK(doris_type->is_nullable());
-        auto* nullable_column = reinterpret_cast<vectorized::ColumnNullable*>(
-                (*std::move(doris_field)).mutate().get());
+        auto mutable_column = doris_field->assume_mutable();
+        auto* nullable_column = static_cast<vectorized::ColumnNullable*>(mutable_column.get());
         nullable_column->insert_null_elements(missing_column_sz);
     }
 

@@ -683,7 +683,7 @@ Status PipelineXFragmentContext::_build_pipeline_x_tasks(
 
         auto prepare_and_set_parent_profile = [&](PipelineXTask* task, size_t pip_idx) {
             DCHECK(pipeline_id_to_profile[pip_idx]);
-            RETURN_IF_ERROR(
+            RETURN_IF_ERROR_OR_CATCH_EXCEPTION(
                     task->prepare(local_params, request.fragment.output_sink, _query_ctx.get()));
             return Status::OK();
         };
@@ -805,7 +805,9 @@ Status PipelineXFragmentContext::_create_tree_helper(
     RETURN_IF_ERROR(_create_operator(pool, tnodes[*node_idx], request, descs, op, cur_pipe,
                                      parent == nullptr ? -1 : parent->node_id(), child_idx,
                                      followed_by_shuffled_operator));
-
+    // Initialization must be done here. For example, group by expressions in agg will be used to
+    // decide if a local shuffle should be planed, so it must be initialized here.
+    RETURN_IF_ERROR(op->init(tnode, _runtime_state.get()));
     // assert(parent != nullptr || (node_idx == 0 && root_expr != nullptr));
     if (parent != nullptr) {
         // add to parent's child(s)
@@ -853,8 +855,6 @@ Status PipelineXFragmentContext::_create_tree_helper(
                     *node_idx, tnodes.size());
         }
     }
-
-    RETURN_IF_ERROR(op->init(tnode, _runtime_state.get()));
 
     return Status::OK();
 }

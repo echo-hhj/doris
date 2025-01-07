@@ -28,6 +28,8 @@ import org.apache.doris.catalog.TableIf;
 import org.apache.doris.catalog.Type;
 import org.apache.doris.common.AnalysisException;
 import org.apache.doris.common.UserException;
+import org.apache.doris.datasource.ExternalTable;
+import org.apache.doris.datasource.mvcc.MvccUtil;
 import org.apache.doris.mtmv.BaseTableInfo;
 import org.apache.doris.mtmv.MTMVRelatedTableIf;
 import org.apache.doris.nereids.analyzer.UnboundRelation;
@@ -246,11 +248,16 @@ public class UpdateMvByPartitionCommand extends InsertOverwriteTableCommand {
             if (predicates.isEmpty()) {
                 return cte;
             }
+            List<LogicalSubQueryAlias<Plan>> rewrittenSubQueryAlias = new ArrayList<>();
             for (LogicalSubQueryAlias<Plan> subQueryAlias : cte.getAliasQueries()) {
+                List<Plan> subQueryAliasChildren = new ArrayList<>();
                 this.virtualRelationNamePartSet.add(subQueryAlias.getQualifier());
-                subQueryAlias.children().forEach(subQuery -> subQuery.accept(this, predicates));
+                subQueryAlias.children().forEach(subQuery ->
+                        subQueryAliasChildren.add(subQuery.accept(this, predicates))
+                );
+                rewrittenSubQueryAlias.add(subQueryAlias.withChildren(subQueryAliasChildren));
             }
-            return super.visitLogicalCTE(cte, predicates);
+            return super.visitLogicalCTE(new LogicalCTE<>(rewrittenSubQueryAlias, cte.child()), predicates);
         }
 
         @Override
@@ -310,6 +317,11 @@ public class UpdateMvByPartitionCommand extends InsertOverwriteTableCommand {
                             // Add filter only when partition has data
                             partitionHasDataItems.add(
                                     ((OlapTable) targetTable).getPartitionInfo().getItem(partition.getId()));
+                        }
+                        if (targetTable instanceof ExternalTable) {
+                            // Add filter only when partition has data when external table
+                            partitionHasDataItems.add(((ExternalTable) targetTable).getNameToPartitionItems(
+                                    MvccUtil.getSnapshotFromContext(targetTable)).get(partitionName));
                         }
                     }
                     if (partitionHasDataItems.isEmpty()) {

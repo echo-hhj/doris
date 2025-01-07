@@ -70,6 +70,9 @@ public:
         _common_expr_ctxs_push_down.clear();
         _stale_expr_ctxs.clear();
         DorisMetrics::instance()->scanner_cnt->increment(-1);
+        DCHECK(DorisMetrics::instance()->scanner_cnt->value() >= 0) << fmt::format(
+                "Meets negative scanner count: {}, current query {}",
+                DorisMetrics::instance()->scanner_cnt->value(), print_id(_state->query_id()));
     }
 
     virtual Status init() { return Status::OK(); }
@@ -135,6 +138,10 @@ public:
 
     void update_scan_cpu_timer();
 
+    // update the bytes and rows read at each round in query statistics.
+    // so that we can get runtime statistics for each query.
+    virtual void _update_bytes_and_rows_read();
+
     RuntimeState* runtime_state() { return _state; }
 
     bool is_open() { return _is_open; }
@@ -162,6 +169,8 @@ public:
     void set_query_statistics(QueryStatistics* query_statistics) {
         _query_statistics = query_statistics;
     }
+
+    int64_t limit() const { return _limit; }
 
 protected:
     void _discard_conjuncts() {
@@ -214,7 +223,12 @@ protected:
     // num of rows read from scanner
     int64_t _num_rows_read = 0;
 
-    int64_t _num_byte_read = 0;
+    // save the current _num_rows_read before next round,
+    // so that we can get delta rows between each round.
+    int64_t _prev_num_rows_read = 0;
+    // bytes read from local and remote fs
+    int64_t _bytes_read_from_local = 0;
+    int64_t _bytes_read_from_remote = 0;
 
     // num of rows return from scanner, after filter block
     int64_t _num_rows_return = 0;

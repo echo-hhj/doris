@@ -56,13 +56,13 @@ suite('compaction_width_array_column', "p2") {
     }
 
     def table_load_task = { table_name ->
-        uniqueID = Math.abs(UUID.randomUUID().hashCode()).toString()
-        loadLabel = table_name + "_" + uniqueID
+        def uniqueID = Math.abs(UUID.randomUUID().hashCode()).toString()
+        def loadLabel = table_name + "_" + uniqueID
         //loadLabel = table_name + '_load_5'
-        loadSql = new File("""${context.file.parent}/ddl/${table_name}_load.sql""").text.replaceAll("\\\$\\{s3BucketName\\}", s3BucketName)
+        def loadSql = new File("""${context.file.parent}/ddl/${table_name}_load.sql""").text.replaceAll("\\\$\\{s3BucketName\\}", s3BucketName)
         loadSql = loadSql.replaceAll("\\\$\\{loadLabel\\}", loadLabel)
         loadSql = loadSql.replaceAll("\\\$\\{table\\_name\\}", table_name)
-        nowloadSql = loadSql + s3WithProperties
+        def nowloadSql = loadSql + s3WithProperties
         try_sql nowloadSql
 
         while (true) {
@@ -88,32 +88,7 @@ suite('compaction_width_array_column', "p2") {
     while (isOverLap && tryCnt < 3) {
         isOverLap = false
 
-        for (def tablet in tablets) {
-            String tablet_id = tablet.TabletId
-            backend_id = tablet.BackendId
-            (code, out, err) = be_run_cumulative_compaction(backendId_to_backendIP.get(backend_id), backendId_to_backendHttpPort.get(backend_id), tablet_id)
-            logger.info("Run compaction: code=" + code + ", out=" + out + ", err=" + err)
-            assertEquals(code, 0)
-            def compactJson = parseJson(out.trim())
-            assertEquals("success", compactJson.status.toLowerCase())
-        }
-
-        // wait for all compactions done
-        for (def tablet in tablets) {
-            boolean running = true
-            do {
-                Thread.sleep(1000)
-                String tablet_id = tablet.TabletId
-                backend_id = tablet.BackendId
-                (code, out, err) = be_get_compaction_status(backendId_to_backendIP.get(backend_id), backendId_to_backendHttpPort.get(backend_id), tablet_id)
-                logger.info("Get compaction status: code=" + code + ", out=" + out + ", err=" + err)
-                assertEquals(code, 0)
-                def compactionStatus = parseJson(out.trim())
-                assertEquals("success", compactionStatus.status.toLowerCase())
-                running = compactionStatus.run_status
-            } while (running)
-        }
-
+        trigger_and_wait_compaction(tableName, "cumulative")
         for (def tablet in tablets) {
             String tablet_id = tablet.TabletId
             (code, out, err) = curl("GET", tablet.CompactionStatus)

@@ -1288,7 +1288,9 @@ DECLARE_mInt32(tablet_schema_cache_capacity);
 DECLARE_mBool(exit_on_exception);
 
 // cgroup
-DECLARE_mString(doris_cgroup_cpu_path);
+DECLARE_String(doris_cgroup_cpu_path);
+
+DECLARE_Int32(workload_group_metrics_interval_ms);
 
 DECLARE_mBool(enable_workload_group_memory_gc);
 
@@ -1344,7 +1346,7 @@ DECLARE_Int32(spill_io_thread_pool_thread_num);
 DECLARE_Int32(spill_io_thread_pool_queue_size);
 
 DECLARE_mBool(check_segment_when_build_rowset_meta);
-
+DECLARE_Int32(num_query_ctx_map_partitions);
 // max s3 client retry times
 DECLARE_mInt32(max_s3_client_retry);
 // When meet s3 429 error, the "get" request will
@@ -1417,6 +1419,12 @@ DECLARE_mInt32(snappy_compression_block_size);
 DECLARE_mInt32(lz4_compression_block_size);
 
 DECLARE_mBool(enable_pipeline_task_leakage_detect);
+DECLARE_Bool(force_regenerate_rowsetid_on_start_error);
+
+DECLARE_mInt32(compaction_num_per_round);
+
+// Enable sleep 5s between delete cumulative compaction.
+DECLARE_mBool(enable_sleep_between_delete_cumu_compaction);
 
 #ifdef BE_TEST
 // test s3

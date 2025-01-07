@@ -412,6 +412,8 @@ struct TQueryStatistics {
     7: optional i64 workload_group_id
     8: optional i64 shuffle_send_bytes
     9: optional i64 shuffle_send_rows
+    10: optional i64 scan_bytes_from_local_storage
+    11: optional i64 scan_bytes_from_remote_storage
 }
 
 struct TReportWorkloadRuntimeStatusParams {
@@ -1149,6 +1151,7 @@ enum TBinlogType {
   RENAME_ROLLUP = 21,
   RENAME_PARTITION = 22,
   DROP_ROLLUP = 23,
+  RECOVER_INFO = 24,
 
   // Keep some IDs for allocation so that when new binlog types are added in the
   // future, the changes can be picked back to the old versions without breaking
@@ -1165,8 +1168,7 @@ enum TBinlogType {
   //    MODIFY_XXX = 17,
   //    MIN_UNKNOWN = 18,
   //    UNKNOWN_3 = 19,
-  MIN_UNKNOWN = 24,
-  UNKNOWN_9 = 25,
+  MIN_UNKNOWN = 25,
   UNKNOWN_10 = 26,
   UNKNOWN_11 = 27,
   UNKNOWN_12 = 28,
@@ -1555,6 +1557,7 @@ struct TGetMetaTableMeta {
     2: optional string name
     3: optional bool in_trash
     4: optional list<TGetMetaPartitionMeta> partitions
+    5: optional string type
 }
 
 struct TGetMetaDBMeta {

@@ -595,11 +595,11 @@ public class Auth implements Writable {
     private void grantInternal(UserIdentity userIdent, String role, TablePattern tblPattern, PrivBitSet privs,
             Map<ColPrivilegeKey, Set<String>> colPrivileges, boolean errOnNonExist, boolean isReplay)
             throws DdlException {
+        if (!isReplay) {
+            checkTablePatternExist(tblPattern, privs);
+        }
         writeLock();
         try {
-            if (!isReplay) {
-                checkTablePatternExist(tblPattern);
-            }
             if (role == null) {
                 if (!doesUserExist(userIdent)) {
                     throw new DdlException("user " + userIdent + " does not exist");
@@ -618,8 +618,12 @@ public class Auth implements Writable {
         }
     }
 
-    private void checkTablePatternExist(TablePattern tablePattern) throws DdlException {
+    private void checkTablePatternExist(TablePattern tablePattern, PrivBitSet privs) throws DdlException {
         Objects.requireNonNull(tablePattern, "tablePattern can not be null");
+        Objects.requireNonNull(privs, "privs can not be null");
+        if (privs.containsPrivs(Privilege.CREATE_PRIV)) {
+            return;
+        }
         PrivLevel privLevel = tablePattern.getPrivLevel();
         if (privLevel == PrivLevel.GLOBAL) {
             return;
@@ -1114,6 +1118,15 @@ public class Auth implements Writable {
         readLock();
         try {
             return propertyMgr.getResourceTags(qualifiedUser);
+        } finally {
+            readUnlock();
+        }
+    }
+
+    public boolean isAllowResourceTagDowngrade(String qualifiedUser) {
+        readLock();
+        try {
+            return propertyMgr.isAllowResourceTagDowngrade(qualifiedUser);
         } finally {
             readUnlock();
         }
